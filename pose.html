@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <title>姿勢推定 MoveNet</title>
+  <style>
+    body { margin: 0; background: #111; display: flex; flex-direction: column; align-items: center; }
+    h1 { color: #fff; font-size: 1rem; margin: 8px 0; }
+    .container { position: relative; }
+    video { display: block; }
+    canvas { position: absolute; top: 0; left: 0; }
+    #overlay {
+      position: absolute; top: 0; left: 0;
+      width: 640px; height: 480px;
+      background: rgba(0,0,0,0.75);
+      display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+      color: #fff; font-size: 0.9rem; gap: 12px;
+    }
+    #bar-wrap {
+      width: 300px; height: 8px;
+      background: #333; border-radius: 4px; overflow: hidden;
+    }
+    #bar {
+      height: 100%; width: 0%;
+      background: #00ff88; border-radius: 4px;
+      transition: width 0.3s ease;
+    }
+  </style>
+</head>
+<body>
+  <h1>姿勢推定 - MoveNet Lightning</h1>
+  <div class="container">
+    <video id="video" width="640" height="480" autoplay playsinline muted></video>
+    <canvas id="canvas" width="640" height="480"></canvas>
+    <div id="overlay">
+      <div id="status">カメラを起動中...</div>
+      <div id="bar-wrap"><div id="bar"></div></div>
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.17.0/dist/tf.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/pose-detection@2.1.3/dist/pose-detection.min.js"></script>
+  <script>
+    const video = document.getElementById('video');
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+
+    const KEYPOINT_PAIRS = [
+      [0,1],[0,2],[1,3],[2,4],       // 顔
+      [5,6],                          // 肩
+      [5,7],[7,9],                    // 左腕
+      [6,8],[8,10],                   // 右腕
+      [5,11],[6,12],[11,12],          // 胴体
+      [11,13],[13,15],                // 左脚
+      [12,14],[14,16]                 // 右脚
+    ];
+
+    function setStatus(msg, pct) {
+      document.getElementById('status').textContent = msg;
+      document.getElementById('bar').style.width = pct + '%';
+    }
+
+    async function init() {
+      setStatus('カメラを起動中...', 10);
+      const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+      video.srcObject = stream;
+      await new Promise(r => video.onloadeddata = r);
+
+      setStatus('モデルをダウンロード中...', 40);
+      const detector = await poseDetection.createDetector(
+        poseDetection.SupportedModels.MoveNet,
+        { modelType: poseDetection.movenet.modelType.SINGLEPOSE_LIGHTNING }
+      );
+
+      setStatus('準備完了', 100);
+      setTimeout(() => {
+        document.getElementById('overlay').style.display = 'none';
+      }, 500);
+
+      detect(detector);
+    }
+
+    async function detect(detector) {
+      const poses = await detector.estimatePoses(video);
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+      if (poses.length > 0) {
+        const kps = poses[0].keypoints;
+
+        // 骨格の線
+        ctx.strokeStyle = '#00ff88';
+        ctx.lineWidth = 2;
+        for (const [a, b] of KEYPOINT_PAIRS) {
+          if (kps[a].score > 0.3 && kps[b].score > 0.3) {
+            ctx.beginPath();
+            ctx.moveTo(kps[a].x, kps[a].y);
+            ctx.lineTo(kps[b].x, kps[b].y);
+            ctx.stroke();
+          }
+        }
+
+        // 関節の点
+        ctx.fillStyle = '#ff4444';
+        for (const kp of kps) {
+          if (kp.score > 0.3) {
+            ctx.beginPath();
+            ctx.arc(kp.x, kp.y, 5, 0, Math.PI * 2);
+            ctx.fill();
+          }
+        }
+      }
+
+      requestAnimationFrame(() => detect(detector));
+    }
+
+    init().catch(err => {
+      document.body.innerHTML += `<p style="color:red">${err.message}</p>`;
+    });
+  </script>
+</body>
+</html>
