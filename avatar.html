@@ -101,7 +101,7 @@
     function lerp(a, b, t) { return a + (b - a) * t; }
 
     function setBone(h, name, rx, ry, rz, t) {
-      const bone = h.getBoneNode(name);
+      const bone = h.getNormalizedBoneNode(name);
       if (!bone) return;
       bone.rotation.x = lerp(bone.rotation.x, rx, t);
       bone.rotation.y = lerp(bone.rotation.y, ry, t);
