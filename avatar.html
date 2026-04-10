@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>アバター姿勢制御</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { background: #1a1a2e; overflow: hidden; }
+    #three-canvas { display: block; }
+    #cam-wrap {
+      position: fixed; bottom: 10px; left: 10px;
+      width: 160px; border: 1px solid #555; border-radius: 4px; overflow: hidden;
+    }
+    #cam-wrap video { display: block; width: 100%; }
+    #cam-wrap canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; }
+    #overlay {
+      position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+      background: rgba(0,0,0,0.85);
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      color: #fff; font-size: 0.9rem; gap: 16px; z-index: 10;
+    }
+    #bar-wrap { width: 260px; height: 8px; background: #333; border-radius: 4px; overflow: hidden; }
+    #bar { height: 100%; width: 0%; background: #00ff88; border-radius: 4px; transition: width 0.3s ease; }
+  </style>
+</head>
+<body>
+  <canvas id="three-canvas"></canvas>
+  <div id="cam-wrap">
+    <video id="video" autoplay playsinline muted></video>
+    <canvas id="pose-canvas"></canvas>
+  </div>
+  <div id="overlay">
+    <div id="status">初期化中...</div>
+    <div id="bar-wrap"><div id="bar"></div></div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@pixiv/three-vrm@1.0.0/lib/three-vrm.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.17.0/dist/tf.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/pose-detection@2.1.3/dist/pose-detection.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/kalidokit@0.1.1/dist/kalidokit.js"></script>
+
+  <script>
+    const threeCanvas = document.getElementById('three-canvas');
+    const video = document.getElementById('video');
+    const poseCanvas = document.getElementById('pose-canvas');
+    const poseCtx = poseCanvas.getContext('2d');
+
+    // ---- Three.js ----
+    const renderer = new THREE.WebGLRenderer({ canvas: threeCanvas, antialias: true });
+    renderer.setPixelRatio(window.devicePixelRatio);
+    renderer.setSize(window.innerWidth, window.innerHeight);
+
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x1a1a2e);
+
+    const camera = new THREE.PerspectiveCamera(35, window.innerWidth / window.innerHeight, 0.1, 100);
+    camera.position.set(0, 1.3, 3.5);
+
+    scene.add(new THREE.AmbientLight(0xffffff, 0.6));
+    const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
+    dirLight.position.set(1, 2, 2);
+    scene.add(dirLight);
+
+    window.addEventListener('resize', () => {
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+    });
+
+    const clock = new THREE.Clock();
+    let currentVRM = null;
+
+    // ---- VRM 読み込み ----
+    function loadVRM(url) {
+      const loader = new THREE.GLTFLoader();
+      loader.register(parser => new THREE_VRM.VRMLoaderPlugin(parser));
+      loader.load(url,
+        (gltf) => {
+          const vrm = gltf.userData.vrm;
+          THREE_VRM.VRMUtils.removeUnnecessaryVertices(gltf.scene);
+          THREE_VRM.VRMUtils.removeUnnecessaryJoints(gltf.scene);
+          vrm.scene.rotation.y = Math.PI;
+          scene.add(vrm.scene);
+          currentVRM = vrm;
+          setStatus('準備完了', 100);
+          setTimeout(() => { document.getElementById('overlay').style.display = 'none'; }, 600);
+        },
+        (xhr) => {
+          if (xhr.total > 0) {
+            const pct = 60 + (xhr.loaded / xhr.total) * 35;
+            setStatus(`アバター読み込み中... ${Math.round(pct)}%`, pct);
+          }
+        },
+        (err) => { setStatus('VRM読み込みエラー: ' + (err.message || err), 0); }
+      );
+    }
+
+    // ---- Kalidokit → VRM ボーン適用 ----
+    function lerp(a, b, t) { return a + (b - a) * t; }
+
+    function applyPose(vrm, rig) {
+      if (!vrm || !rig) return;
+      const h = vrm.humanoid;
+      const map = {
+        Hips: 'hips', Spine: 'spine', Chest: 'chest', Neck: 'neck', Head: 'head',
+        LeftUpperArm: 'leftUpperArm', LeftLowerArm: 'leftLowerArm',
+        RightUpperArm: 'rightUpperArm', RightLowerArm: 'rightLowerArm',
+        LeftUpperLeg: 'leftUpperLeg', LeftLowerLeg: 'leftLowerLeg',
+        RightUpperLeg: 'rightUpperLeg', RightLowerLeg: 'rightLowerLeg',
+      };
+      for (const [k, v] of Object.entries(map)) {
+        const r = rig[k];
+        if (!r) continue;
+        const bone = h.getBoneNode(v);
+        if (!bone) continue;
+        const rot = r.rotation || r;
+        bone.rotation.x = lerp(bone.rotation.x, rot.x || 0, 0.3);
+        bone.rotation.y = lerp(bone.rotation.y, rot.y || 0, 0.3);
+        bone.rotation.z = lerp(bone.rotation.z, rot.z || 0, 0.3);
+      }
+      if (rig.Hips?.position) {
+        const bone = h.getBoneNode('hips');
+        if (bone) {
+          bone.position.x = lerp(bone.position.x, rig.Hips.position.x * 0.3, 0.1);
+          bone.position.y = lerp(bone.position.y, rig.Hips.position.y + 0.9, 0.1);
+        }
+      }
+    }
+
+    function setStatus(msg, pct) {
+      document.getElementById('status').textContent = msg;
+      document.getElementById('bar').style.width = pct + '%';
+    }
+
+    // ---- スケルトン描画用ペア（BlazePose 33点）----
+    const PAIRS = [
+      [0,1],[1,2],[2,3],[3,7],[0,4],[4,5],[5,6],[6,8],
+      [11,12],[11,13],[13,15],[12,14],[14,16],
+      [11,23],[12,24],[23,24],
+      [23,25],[25,27],[24,26],[26,28]
+    ];
+
+    let poseDetector = null;
+
+    // ---- 姿勢推定ループ ----
+    async function poseLoop() {
+      if (poseDetector && video.readyState >= 2) {
+        const poses = await poseDetector.estimatePoses(video);
+        poseCtx.clearRect(0, 0, poseCanvas.width, poseCanvas.height);
+
+        if (poses.length > 0) {
+          const kps = poses[0].keypoints;
+          const kps3D = poses[0].keypoints3D;
+
+          poseCtx.strokeStyle = '#00ff88';
+          poseCtx.lineWidth = 1;
+          for (const [a, b] of PAIRS) {
+            if (kps[a]?.score > 0.3 && kps[b]?.score > 0.3) {
+              poseCtx.beginPath();
+              poseCtx.moveTo(kps[a].x, kps[a].y);
+              poseCtx.lineTo(kps[b].x, kps[b].y);
+              poseCtx.stroke();
+            }
+          }
+          poseCtx.fillStyle = '#ff4444';
+          for (const kp of kps) {
+            if (kp.score > 0.3) {
+              poseCtx.beginPath();
+              poseCtx.arc(kp.x, kp.y, 2, 0, Math.PI * 2);
+              poseCtx.fill();
+            }
+          }
+
+          if (currentVRM && kps3D) {
+            const lm3d = kps3D.map(kp => ({ x: kp.x, y: kp.y, z: kp.z || 0, visibility: kp.score }));
+            const lm2d = kps.map(kp => ({
+              x: kp.x / video.videoWidth,
+              y: kp.y / video.videoHeight,
+              z: 0,
+              visibility: kp.score
+            }));
+            const rig = Kalidokit.Pose.solve(lm3d, lm2d, {
+              runtime: 'tfjs',
+              video,
+              imageSize: { width: video.videoWidth, height: video.videoHeight }
+            });
+            applyPose(currentVRM, rig);
+          }
+        }
+      }
+      requestAnimationFrame(poseLoop);
+    }
+
+    // ---- レンダーループ ----
+    function renderLoop() {
+      requestAnimationFrame(renderLoop);
+      if (currentVRM) currentVRM.update(clock.getDelta());
+      renderer.render(scene, camera);
+    }
+
+    // ---- 初期化 ----
+    async function init() {
+      setStatus('カメラを起動中...', 10);
+      const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+      video.srcObject = stream;
+      await new Promise(r => video.onloadeddata = r);
+      poseCanvas.width = video.videoWidth;
+      poseCanvas.height = video.videoHeight;
+
+      setStatus('姿勢モデルをダウンロード中...', 25);
+      poseDetector = await poseDetection.createDetector(
+        poseDetection.SupportedModels.BlazePose,
+        { runtime: 'tfjs', modelType: 'lite' }
+      );
+
+      setStatus('アバターを読み込み中...', 60);
+      loadVRM('./avatar.vrm');
+
+      renderLoop();
+      poseLoop();
+    }
+
+    init().catch(err => {
+      document.getElementById('status').textContent = 'エラー: ' + err.message;
+      console.error(err);
+    });
+  </script>
+</body>
+</html>
