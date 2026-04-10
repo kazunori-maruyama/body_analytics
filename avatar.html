@@ -40,7 +40,6 @@
   <script src="https://cdn.jsdelivr.net/npm/@pixiv/three-vrm@1.0.0/lib/three-vrm.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.17.0/dist/tf.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/pose-detection@2.1.3/dist/pose-detection.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/kalidokit@0.1.1/dist/kalidokit.js"></script>
 
   <script>
     const threeCanvas = document.getElementById('three-canvas');
@@ -98,35 +97,86 @@
       );
     }
 
-    // ---- Kalidokit → VRM ボーン適用 ----
+    // ---- ユーティリティ ----
     function lerp(a, b, t) { return a + (b - a) * t; }
 
-    function applyPose(vrm, rig) {
-      if (!vrm || !rig) return;
+    function setBone(h, name, rx, ry, rz, t) {
+      const bone = h.getBoneNode(name);
+      if (!bone) return;
+      bone.rotation.x = lerp(bone.rotation.x, rx, t);
+      bone.rotation.y = lerp(bone.rotation.y, ry, t);
+      bone.rotation.z = lerp(bone.rotation.z, rz, t);
+    }
+
+    // ---- MoveNet → VRM ボーン変換 ----
+    // MoveNet keypoints:
+    // 0:nose 1:left_eye 2:right_eye 3:left_ear 4:right_ear
+    // 5:left_shoulder 6:right_shoulder 7:left_elbow 8:right_elbow
+    // 9:left_wrist 10:right_wrist 11:left_hip 12:right_hip
+    // 13:left_knee 14:right_knee 15:left_ankle 16:right_ankle
+    function applyPoseToVRM(kps, vrm) {
+      if (!vrm) return;
       const h = vrm.humanoid;
-      const map = {
-        Hips: 'hips', Spine: 'spine', Chest: 'chest', Neck: 'neck', Head: 'head',
-        LeftUpperArm: 'leftUpperArm', LeftLowerArm: 'leftLowerArm',
-        RightUpperArm: 'rightUpperArm', RightLowerArm: 'rightLowerArm',
-        LeftUpperLeg: 'leftUpperLeg', LeftLowerLeg: 'leftLowerLeg',
-        RightUpperLeg: 'rightUpperLeg', RightLowerLeg: 'rightLowerLeg',
-      };
-      for (const [k, v] of Object.entries(map)) {
-        const r = rig[k];
-        if (!r) continue;
-        const bone = h.getBoneNode(v);
-        if (!bone) continue;
-        const rot = r.rotation || r;
-        bone.rotation.x = lerp(bone.rotation.x, rot.x || 0, 0.3);
-        bone.rotation.y = lerp(bone.rotation.y, rot.y || 0, 0.3);
-        bone.rotation.z = lerp(bone.rotation.z, rot.z || 0, 0.3);
+      const kp = (i) => kps[i]?.score > 0.3 ? kps[i] : null;
+
+      const ls = kp(5), rs = kp(6);
+      const le = kp(7), re = kp(8);
+      const lw = kp(9), rw = kp(10);
+      const lh = kp(11), rh = kp(12);
+      const lk = kp(13), rk = kp(14);
+
+      // 左上腕: shoulder→elbow (T-pose: screen右方向, angle=0)
+      if (ls && le) {
+        const a = Math.atan2(le.y - ls.y, le.x - ls.x);
+        setBone(h, 'leftUpperArm', 0, 0, -a, 0.3);
       }
-      if (rig.Hips?.position) {
-        const bone = h.getBoneNode('hips');
-        if (bone) {
-          bone.position.x = lerp(bone.position.x, rig.Hips.position.x * 0.3, 0.1);
-          bone.position.y = lerp(bone.position.y, rig.Hips.position.y + 0.9, 0.1);
-        }
+
+      // 右上腕: shoulder→elbow (T-pose: screen左方向, angle=π)
+      if (rs && re) {
+        const a = Math.atan2(re.y - rs.y, re.x - rs.x);
+        setBone(h, 'rightUpperArm', 0, 0, Math.PI - a, 0.3);
+      }
+
+      // 左前腕: ひじの曲げ
+      if (ls && le && lw) {
+        const a1 = Math.atan2(le.y - ls.y, le.x - ls.x);
+        const a2 = Math.atan2(lw.y - le.y, lw.x - le.x);
+        const bend = a2 - a1;
+        setBone(h, 'leftLowerArm', 0, 0, -bend * 0.6, 0.3);
+      }
+
+      // 右前腕: ひじの曲げ
+      if (rs && re && rw) {
+        const a1 = Math.atan2(re.y - rs.y, re.x - rs.x);
+        const a2 = Math.atan2(rw.y - re.y, rw.x - re.x);
+        const bend = a2 - a1;
+        setBone(h, 'rightLowerArm', 0, 0, bend * 0.6, 0.3);
+      }
+
+      // 左大腿: hip→knee (T-pose: screen下方向, angle=π/2)
+      if (lh && lk) {
+        const a = Math.atan2(lk.y - lh.y, lk.x - lh.x);
+        setBone(h, 'leftUpperLeg', 0, 0, -(a - Math.PI / 2), 0.3);
+      }
+
+      // 右大腿: hip→knee
+      if (rh && rk) {
+        const a = Math.atan2(rk.y - rh.y, rk.x - rh.x);
+        setBone(h, 'rightUpperLeg', 0, 0, -(a - Math.PI / 2), 0.3);
+      }
+
+      // 脊椎の傾き
+      if (ls && rs && lh && rh) {
+        const smx = (ls.x + rs.x) / 2, smy = (ls.y + rs.y) / 2;
+        const hmx = (lh.x + rh.x) / 2, hmy = (lh.y + rh.y) / 2;
+        const a = Math.atan2(smy - hmy, smx - hmx);
+        setBone(h, 'spine', 0, 0, -(a + Math.PI / 2) * 0.5, 0.2);
+      }
+
+      // 頭の傾き（肩の傾きに連動）
+      if (ls && rs) {
+        const a = Math.atan2(rs.y - ls.y, rs.x - ls.x);
+        setBone(h, 'head', 0, 0, -a * 0.3, 0.2);
       }
     }
 
@@ -135,12 +185,12 @@
       document.getElementById('bar').style.width = pct + '%';
     }
 
-    // ---- スケルトン描画用ペア（BlazePose 33点）----
+    // ---- スケルトン描画ペア（MoveNet 17点）----
     const PAIRS = [
-      [0,1],[1,2],[2,3],[3,7],[0,4],[4,5],[5,6],[6,8],
-      [11,12],[11,13],[13,15],[12,14],[14,16],
-      [11,23],[12,24],[23,24],
-      [23,25],[25,27],[24,26],[26,28]
+      [0,1],[0,2],[1,3],[2,4],
+      [5,6],[5,7],[7,9],[6,8],[8,10],
+      [5,11],[6,12],[11,12],
+      [11,13],[13,15],[12,14],[14,16]
     ];
 
     let poseDetector = null;
@@ -148,47 +198,36 @@
     // ---- 姿勢推定ループ ----
     async function poseLoop() {
       if (poseDetector && video.readyState >= 2) {
-        const poses = await poseDetector.estimatePoses(video);
-        poseCtx.clearRect(0, 0, poseCanvas.width, poseCanvas.height);
+        try {
+          const poses = await poseDetector.estimatePoses(video);
+          poseCtx.clearRect(0, 0, poseCanvas.width, poseCanvas.height);
 
-        if (poses.length > 0) {
-          const kps = poses[0].keypoints;
-          const kps3D = poses[0].keypoints3D;
+          if (poses.length > 0) {
+            const kps = poses[0].keypoints;
 
-          poseCtx.strokeStyle = '#00ff88';
-          poseCtx.lineWidth = 1;
-          for (const [a, b] of PAIRS) {
-            if (kps[a]?.score > 0.3 && kps[b]?.score > 0.3) {
-              poseCtx.beginPath();
-              poseCtx.moveTo(kps[a].x, kps[a].y);
-              poseCtx.lineTo(kps[b].x, kps[b].y);
-              poseCtx.stroke();
+            poseCtx.strokeStyle = '#00ff88';
+            poseCtx.lineWidth = 2;
+            for (const [a, b] of PAIRS) {
+              if (kps[a]?.score > 0.3 && kps[b]?.score > 0.3) {
+                poseCtx.beginPath();
+                poseCtx.moveTo(kps[a].x, kps[a].y);
+                poseCtx.lineTo(kps[b].x, kps[b].y);
+                poseCtx.stroke();
+              }
             }
-          }
-          poseCtx.fillStyle = '#ff4444';
-          for (const kp of kps) {
-            if (kp.score > 0.3) {
-              poseCtx.beginPath();
-              poseCtx.arc(kp.x, kp.y, 2, 0, Math.PI * 2);
-              poseCtx.fill();
+            poseCtx.fillStyle = '#ff4444';
+            for (const kp of kps) {
+              if (kp.score > 0.3) {
+                poseCtx.beginPath();
+                poseCtx.arc(kp.x, kp.y, 4, 0, Math.PI * 2);
+                poseCtx.fill();
+              }
             }
-          }
 
-          if (currentVRM && kps3D) {
-            const lm3d = kps3D.map(kp => ({ x: kp.x, y: kp.y, z: kp.z || 0, visibility: kp.score }));
-            const lm2d = kps.map(kp => ({
-              x: kp.x / video.videoWidth,
-              y: kp.y / video.videoHeight,
-              z: 0,
-              visibility: kp.score
-            }));
-            const rig = Kalidokit.Pose.solve(lm3d, lm2d, {
-              runtime: 'tfjs',
-              video,
-              imageSize: { width: video.videoWidth, height: video.videoHeight }
-            });
-            applyPose(currentVRM, rig);
+            applyPoseToVRM(kps, currentVRM);
           }
+        } catch (e) {
+          console.warn('pose error:', e);
         }
       }
       requestAnimationFrame(poseLoop);
@@ -210,13 +249,13 @@
       poseCanvas.width = video.videoWidth;
       poseCanvas.height = video.videoHeight;
 
-      setStatus('姿勢モデルをダウンロード中...', 25);
+      setStatus('姿勢モデルをダウンロード中...', 30);
       poseDetector = await poseDetection.createDetector(
-        poseDetection.SupportedModels.BlazePose,
-        { runtime: 'tfjs', modelType: 'lite' }
+        poseDetection.SupportedModels.MoveNet,
+        { modelType: poseDetection.movenet.modelType.SINGLEPOSE_LIGHTNING }
       );
 
-      setStatus('アバターを読み込み中...', 60);
+      setStatus('アバターを読み込み中...', 65);
       loadVRM('./avatar.vrm');
 
       renderLoop();
