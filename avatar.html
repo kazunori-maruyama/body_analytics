@@ -128,13 +128,13 @@
       // 左上腕: shoulder→elbow (T-pose: screen右方向, angle=0)
       if (ls && le) {
         const a = Math.atan2(le.y - ls.y, le.x - ls.x);
-        setBone(h, 'leftUpperArm', 0, 0, -a, 0.3);
+        setBone(h, 'leftUpperArm', 0, 0, a, 0.3);
       }
 
       // 右上腕: shoulder→elbow (T-pose: screen左方向, angle=π)
       if (rs && re) {
         const a = Math.atan2(re.y - rs.y, re.x - rs.x);
-        setBone(h, 'rightUpperArm', 0, 0, Math.PI - a, 0.3);
+        setBone(h, 'rightUpperArm', 0, 0, a - Math.PI, 0.3);
       }
 
       // 左前腕: ひじの曲げ
@@ -142,7 +142,7 @@
         const a1 = Math.atan2(le.y - ls.y, le.x - ls.x);
         const a2 = Math.atan2(lw.y - le.y, lw.x - le.x);
         const bend = a2 - a1;
-        setBone(h, 'leftLowerArm', 0, 0, -bend * 0.6, 0.3);
+        setBone(h, 'leftLowerArm', 0, 0, bend * 0.6, 0.3);
       }
 
       // 右前腕: ひじの曲げ
@@ -150,7 +150,7 @@
         const a1 = Math.atan2(re.y - rs.y, re.x - rs.x);
         const a2 = Math.atan2(rw.y - re.y, rw.x - re.x);
         const bend = a2 - a1;
-        setBone(h, 'rightLowerArm', 0, 0, bend * 0.6, 0.3);
+        setBone(h, 'rightLowerArm', 0, 0, -bend * 0.6, 0.3);
       }
 
       // 左大腿: hip→knee (T-pose: screen下方向, angle=π/2)
